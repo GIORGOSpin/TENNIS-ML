@@ -1,14 +1,14 @@
-
-
 import pandas as pd
 import numpy as np
 import json
 
 def label_encode_series(s):
-    """Απλό label encoder για μία pandas Series. Επιστρέφει series_encoded, mapping dict."""
-    vals = s.fillna("Unknown").astype(str).unique()
+    """Simple label encoder for a pandas Series."""
+    s = s.fillna("Unknown").astype(str)
+    vals = s.unique()
     mapping = {v: i for i, v in enumerate(vals)}
-    return s.fillna("Unknown").astype(str).map(mapping), mapping
+    return s.map(mapping), mapping
+
 
 def build_two_vector_features(
     input_csv='cleaned_atp_matches.csv',
@@ -16,151 +16,121 @@ def build_two_vector_features(
     encodings_out='feature_encodings.json',
     include_swapped=True
 ):
-    """
-    Διαβάζει cleaned_atp_matches.csv και παράγει features_two_vector.csv
-    include_swapped: αν True, για κάθε αγώνα θα δημιουργηθεί και η αντίστροφη σειρά (p1=loser) με target=0
-    Επίσης αποθηκεύει τα mappings (label encodings) σε JSON για μελλοντική χρήση.
-    """
-
+    print("Loading cleaned data...")
     df = pd.read_csv(input_csv)
-    df = df.copy()  # εργαστούμε σε αντίγραφο
 
-    # --- 1) Βασικός καθαρισμός / συμπλήρωση αν χρειάζεται ---
-    df.fillna({"winner_hand": "Unknown", "loser_hand": "Unknown", "surface": "Unknown", "tourney_level": "Unknown"}, inplace=True)
-    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    for c in num_cols:
-        if df[c].isnull().any():
-            df[c].fillna(df[c].median(), inplace=True)
-
-    # --- 2) One-hot για μικρές κατηγορίες (surface, tourney_level) ---
-    categorical_onehot = ['surface', 'tourney_level']
-    for col in categorical_onehot:
-        if col in df.columns:
-            dummies = pd.get_dummies(df[col].astype(str), prefix=col)
-            df = pd.concat([df, dummies], axis=1)
-
-    # --- 3) Binary / one-hot για χέρι κάθε παίκτη ---
-    df['winner_hand'] = df['winner_hand'].fillna("Unknown").astype(str)
-    df['loser_hand'] = df['loser_hand'].fillna("Unknown").astype(str)
-    hands = sorted(list(set(df['winner_hand'].unique().tolist() + df['loser_hand'].unique().tolist())))
-    for h in hands:
-        df[f'p1_hand_{h}'] = (df['winner_hand'] == h).astype(int)
-        df[f'p2_hand_{h}'] = (df['loser_hand'] == h).astype(int)
-
-    # --- 4) Label-encode για μεγάλες κατηγορίες που δεν θέλουμε one-hot ---
-    encodings = {}
-    for col in ['tourney_name', 'round', 'tourney_id', 'winner_ioc', 'loser_ioc', 'winner_entry', 'loser_entry']:
-        if col in df.columns:
-            encoded_series, mapping = label_encode_series(df[col])
-            df[col + '_encoded'] = encoded_series
-            encodings[col] = mapping
-
-    # --- 5) Συλλογή πεδίων για p1 και p2 ---
-    p1_source_fields = [
-        'winner_id','winner_seed','winner_entry','winner_name','winner_hand','winner_ht','winner_ioc',
-        'winner_age','winner_rank','winner_rank_points',
-        'w_ace','w_df','w_svpt','w_1stIn','w_1stWon','w_2ndWon','w_SvGms','w_bpSaved','w_bpFaced'
+    # Only keep **pre-match** features (no leakage)
+    prematch_p1 = [
+        'winner_id', 'winner_seed', 'winner_entry',
+        'winner_name', 'winner_hand', 'winner_ht',
+        'winner_ioc', 'winner_age', 'winner_rank', 'winner_rank_points'
     ]
-    p2_source_fields = [
-        'loser_id','loser_seed','loser_entry','loser_name','loser_hand','loser_ht','loser_ioc',
-        'loser_age','loser_rank','loser_rank_points',
-        'l_ace','l_df','l_svpt','l_1stIn','l_1stWon','l_2ndWon','l_SvGms','l_bpSaved','l_bpFaced'
-    ]
-    p1_source_fields = [c for c in p1_source_fields if c in df.columns]
-    p2_source_fields = [c for c in p2_source_fields if c in df.columns]
 
-    # --- 6) Match-level χαρακτηριστικά ---
-    match_fields = ['tourney_date', 'draw_size', 'best_of', 'minutes', 'match_num', 'score']
+    prematch_p2 = [
+        'loser_id', 'loser_seed', 'loser_entry',
+        'loser_name', 'loser_hand', 'loser_ht',
+        'loser_ioc', 'loser_age', 'loser_rank', 'loser_rank_points'
+    ]
+
+    match_fields = [
+        'surface', 'tourney_level', 'tourney_date', 'round',
+        'tourney_name', 'tourney_id', 'draw_size', 'best_of'
+    ]
+
+    # Remove fields that do NOT exist in this dataset
+    prematch_p1 = [c for c in prematch_p1 if c in df.columns]
+    prematch_p2 = [c for c in prematch_p2 if c in df.columns]
     match_fields = [c for c in match_fields if c in df.columns]
 
-    surface_cols = [c for c in df.columns if c.startswith('surface_')]
-    tourney_level_cols = [c for c in df.columns if c.startswith('tourney_level_')]
+    # Fill simple missing values
+    df.fillna({
+        'winner_entry': "Unknown",
+        'loser_entry': "Unknown",
+        'winner_hand': "Unknown",
+        'loser_hand': "Unknown",
+        'surface': "Unknown",
+        'tourney_level': "Unknown",
+        'round': "Unknown"
+    }, inplace=True)
 
-    # --- 7) Δημιουργία rows TWO-VECTOR ---
+    # Encode categorical match-level fields
+    onehot_cols = ['surface', 'tourney_level']
+    df = pd.get_dummies(df, columns=onehot_cols, prefix=onehot_cols)
+
+    # Encode remaining large categories
+    encodings = {}
+    for c in ['round', 'tourney_name', 'tourney_id']:
+        if c in df.columns:
+            df[c + '_enc'], mapping = label_encode_series(df[c])
+            encodings[c] = mapping
+
     rows = []
 
+    print("Building two-vector rows...")
     for _, row in df.iterrows():
         p1 = {}
         p2 = {}
 
-        for c in p1_source_fields:
-            key = 'p1_' + c.replace('winner_', '')
-            if c + '_encoded' in df.columns:
-                val = row.get(c + '_encoded', row.get(c, np.nan))
-            else:
-                val = row.get(c, np.nan)
-            p1[key] = val
+        # Map winner → p1
+        for c in prematch_p1:
+            key = "p1_" + c.replace("winner_", "")
+            p1[key] = row[c]
 
-        for c in p2_source_fields:
-            key = 'p2_' + c.replace('loser_', '')
-            if c + '_encoded' in df.columns:
-                val = row.get(c + '_encoded', row.get(c, np.nan))
-            else:
-                val = row.get(c, np.nan)
-            p2[key] = val
+        # Map loser → p2
+        for c in prematch_p2:
+            key = "p2_" + c.replace("loser_", "")
+            p2[key] = row[c]
 
-        match_feats = {}
-        for c in surface_cols + tourney_level_cols:
-            match_feats[c] = row.get(c, 0)
-        for enc_col in ['round_encoded', 'tourney_name_encoded', 'tourney_id_encoded']:
-            if enc_col in df.columns:
-                match_feats[enc_col] = row.get(enc_col, np.nan)
-        for c in match_fields:
-            match_feats[c] = row.get(c, np.nan)
+        # Match-level fields
+        m = {}
+        for c in df.columns:
+            if c.startswith('surface_') or c.startswith('tourney_level_'):
+                m[c] = row[c]
+        for c in ['round_enc', 'tourney_name_enc', 'tourney_id_enc', 'draw_size', 'best_of', 'tourney_date']:
+            if c in df.columns:
+                m[c] = row[c]
 
-        combined = {}
-        combined.update(p1)
-        combined.update(p2)
-        combined.update(match_feats)
-        combined['target'] = 1  # p1 (winner) κέρδισε
-
+        # Primary row (winner = p1 → target=1)
+        combined = {**p1, **p2, **m, 'target': 1}
         rows.append(combined)
 
+        # Swapped row (loser becomes p1 → target=0)
         if include_swapped:
-            swapped = {}
-            for k, v in p2.items():
-                swapped['p1_' + k[len('p2_'):]] = v
-            for k, v in p1.items():
-                swapped['p2_' + k[len('p1_'):]] = v
-            swapped.update(match_feats)
-            swapped['target'] = 0
+            sw1 = {("p1_" + k[3:]): v for k, v in p2.items()}
+            sw2 = {("p2_" + k[3:]): v for k, v in p1.items()}
+            swapped = {**sw1, **sw2, **m, 'target': 0}
             rows.append(swapped)
 
     final_df = pd.DataFrame(rows)
 
-    # --- 7.5) Label encode για p1_name και p2_name ---
-    final_df['p1_name_encoded'], mapping_p1_name = label_encode_series(final_df['p1_name'])
-    final_df['p2_name_encoded'], mapping_p2_name = label_encode_series(final_df['p2_name'])
-    encodings['p1_name'] = mapping_p1_name
-    encodings['p2_name'] = mapping_p2_name
+    # Encode player names at the end
+    print("Encoding player names...")
+    names = pd.concat([
+        final_df['p1_name'].astype(str),
+        final_df['p2_name'].astype(str)
+    ], ignore_index=True)
 
-    # Αν θέλεις, αφαιρούμε τα string ονόματα (προτείνεται)
+    name_encoded, name_map = label_encode_series(names)
+
+    # Split back correctly
+    half = len(name_encoded) // 2
+    final_df['p1_name_encoded'] = name_encoded[:half].values
+    final_df['p2_name_encoded'] = name_encoded[half:].values
+    encodings['player_name'] = name_map
+
+    # Drop name strings
     final_df.drop(columns=['p1_name', 'p2_name'], inplace=True)
 
-    # --- 8) Συμπλήρωση missing ---
-    for c in final_df.columns:
-        if final_df[c].dtype == object:
-            final_df[c] = final_df[c].fillna("Unknown")
-        else:
-            if final_df[c].isnull().any():
-                try:
-                    med = final_df[c].median()
-                    final_df[c] = final_df[c].fillna(med)
-                except Exception:
-                    final_df[c] = final_df[c].fillna(0)
+    # Save
+    print(f"Saving output to {output_csv}...")
+    final_df.to_csv(output_csv, index=False)
 
-    # --- 9) Αποθήκευση ---
     with open(encodings_out, 'w', encoding='utf-8') as f:
         json.dump(encodings, f, ensure_ascii=False, indent=2)
 
-    final_df.to_csv(output_csv, index=False)
-    print(f"Saved TWO-VECTOR features to: {output_csv}")
-    print(f"Saved label-encodings (mappings) to: {encodings_out}")
-    print(f"Rows produced: {len(final_df)} (include_swapped={include_swapped})")
-    print("Columns in final dataset:", final_df.columns.tolist())
+    print("DONE.")
+    print("Generated rows:", len(final_df))
+
 
 if __name__ == "__main__":
     build_two_vector_features()
-
-
-

@@ -40,12 +40,14 @@ class CustomLogisticRegression:
 
 class ManualStandardScaler:
     def fit(self, X):
+        X = np.array(X, dtype=float)   # <--- FIX: ensure numpy float array
         self.mean_ = X.mean(axis=0)
         self.std_ = X.std(axis=0)
         # αποφυγή διαίρεσης με μηδέν
         self.std_[self.std_ == 0] = 1
 
     def transform(self, X):
+        X = np.array(X, dtype=float)   # <--- FIX: ensure numpy float array
         return (X - self.mean_) / self.std_
 
     def fit_transform(self, X):

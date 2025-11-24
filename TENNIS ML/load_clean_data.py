@@ -1,14 +1,34 @@
 import pandas as pd
 import numpy as np
 
-# Φόρτωση ακατέργαστων δεδομένων
+# Load raw data
 df = pd.read_csv("atp_matches_2024.csv")
 
-# Έλεγχος ελλιπών τιμών πριν τον καθαρισμό
-print("Απουσίες πριν τον καθαρισμό:")
+print("Missing values before cleaning:")
 print(df.isnull().sum())
 
-# Κωδικοποίηση όλων των στήλων τύπου string σε αριθμούς
+# Handle missing data smartly
+def handle_missing(df):
+    for col in df.columns:
+        if df[col].isnull().all():
+            continue
+        
+        if np.issubdtype(df[col].dtype, np.number):
+            if df[col].isnull().any():
+                # Add missing indicator column
+                df[col + "_missing"] = df[col].isnull().astype(int)
+                median_val = df[col].median()
+                df[col].fillna(median_val, inplace=True)
+                print(f"Filled numeric '{col}' missing with median: {median_val}")
+        else:
+            if df[col].isnull().any():
+                df[col].fillna("Unknown", inplace=True)
+                print(f"Filled categorical '{col}' missing with 'Unknown'")
+    return df
+
+df = handle_missing(df)
+
+# Now encode string columns after missing values are filled
 def encode_all_string_columns(df):
     mappings = {}
     for col in df.columns:
@@ -17,32 +37,14 @@ def encode_all_string_columns(df):
             val_to_id = {val: i for i, val in enumerate(unique_vals)}
             df[col + "_encoded"] = df[col].map(val_to_id)
             mappings[col] = val_to_id
+            print(f"Encoded column '{col}' with {len(val_to_id)} unique values.")
     return df, mappings
 
 df, encoding_maps = encode_all_string_columns(df)
 
-# Διαχείριση ελλιπών τιμών: αριθμητικά με τη διάμεσο, κατηγορικά με "Unknown"
-def handle_missing(df):
-    for col in df.columns:
-        if df[col].isnull().all():
-            continue
-
-        if np.issubdtype(df[col].dtype, np.number):
-            if df[col].isnull().any():
-                df[col + "_missing"] = df[col].isnull().astype(int)
-                median_val = df[col].median()
-                df[col] = df[col].fillna(median_val)
-        elif df[col].dtype == "object":
-            if df[col].isnull().any():
-                df[col] = df[col].fillna("Unknown")
-    return df
-
-df = handle_missing(df)
-
-# Έλεγχος ελλιπών τιμών μετά τον καθαρισμό
-print("Απουσίες μετά τον καθαρισμό:")
+print("\nMissing values after cleaning:")
 print(df.isnull().sum())
 
-# Αποθήκευση καθαρών δεδομένων για το επόμενο βήμα
+# Save cleaned and encoded dataset
 df.to_csv("cleaned_atp_matches.csv", index=False)
-print("Καθαρά δεδομένα αποθηκεύτηκαν στο cleaned_atp_matches.csv")
+print("\nCleaned data saved to cleaned_atp_matches.csv")

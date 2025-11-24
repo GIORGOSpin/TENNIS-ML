@@ -45,6 +45,8 @@ def load_trained_model():
     raise FileNotFoundError("Δεν βρέθηκε αποθηκευμένο μοντέλο (trained_model.json ή logreg_weights.npy).")
 
 def sigmoid(z):
+    z = np.array(z, dtype=np.float64)       # Ensure numpy array
+    z = np.clip(z, -500, 500)               # Optional: avoid overflow
     return 1.0 / (1.0 + np.exp(-z))
 
 def evaluate(input_csv="features_selected.csv", date_col="tourney_date", date_cutoff=20240925):
